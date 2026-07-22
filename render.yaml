@@ -1,20 +1,15 @@
 services:
   - type: web
     name: utamu-agency-backend
-    env: node
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
-    buildCommand: npm install
-    startCommand: npm start
     envVars:
-      - key: NODE_VERSION
-        value: 20.11.1
-      - key: ADMIN_PASSWORD
-        value: 11utamu72
-      - key: SESSION_SECRET
-        generateValue: true
       - key: NODE_ENV
         value: production
-    disk:
-      name: utamu-uploads
-      mountPath: /opt/render/project/src/uploads
-      sizeGB: 1
+      - key: PORT
+        value: 10000
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
