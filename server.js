@@ -1,7 +1,24 @@
 /**
- * Utamu Agency - Backend Server
- * Node.js + Express + SQLite
- * Deployable to Render.com Free Tier
+ * Utamu Agency - Mombasa Hookup Weekend Application
+ * Backend server (Express + SQLite + Multer)
+ *
+ * Endpoints:
+ *   POST /api/apply                  - submit an application (multipart/form-data)
+ *   GET  /api/receipt/:ticket        - fetch receipt JSON by ticket
+ *   GET  /api/receipt/:ticket/pdf    - download receipt as printable HTML
+ *
+ *   POST /admin/login                - password login
+ *   POST /admin/logout               - logout
+ *   GET  /admin/api/session          - check session
+ *   GET  /admin/api/applications     - list all applications
+ *   GET  /admin/api/applications/:id - single application detail
+ *   GET  /admin/api/export.csv       - export all as CSV
+ *   GET  /admin/api/download/:id/all - download all files for an application (zip)
+ *   GET  /admin/api/file/:id/:field/:index - serve/download individual asset
+ *   DELETE /admin/api/applications/:id - delete an application
+ *
+ *   GET  /admin                      - admin panel UI
+ *   GET  /                           - health / landing
  */
 
 require('dotenv').config();
@@ -10,421 +27,428 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const session = require('express-session');
 const Database = require('better-sqlite3');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
 const archiver = require('archiver');
-const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '11utamu72';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
-// ============ CONFIGURATION ============
-const JWT_SECRET = process.env.JWT_SECRET || 'utamu-agency-super-secret-key-change-in-prod-2026';
-const ADMIN_PASSWORD_PLAIN = process.env.ADMIN_PASSWORD || '11utamu72';
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
-
-// On Render free tier, persistent disk is optional. We use local uploads dir.
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'utamu.db');
-
+// ---------- Paths ----------
+const DATA_DIR = path.join(__dirname, 'data');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// ============ MIDDLEWARE ============
-app.use(cors({ origin: '*', credentials: false }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Serve uploaded files (protected via token query param for security)
-app.use('/uploads', (req, res, next) => {
-  const token = req.query.token;
-  if (!token) return res.status(401).json({ error: 'Token required' });
-  try {
-    jwt.verify(token, JWT_SECRET);
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-}, express.static(UPLOAD_DIR));
-
-// Rate limiter for submissions
-const submitLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { error: 'Too many submissions from this IP, please try again later.' }
-});
-
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many login attempts, please try again later.' }
-});
-
-// ============ DATABASE SETUP ============
-const db = new Database(DB_PATH);
+// ---------- Database ----------
+const db = new Database(path.join(DATA_DIR, 'utamu.db'));
 db.pragma('journal_mode = WAL');
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS applications (
-    id TEXT PRIMARY KEY,
-    ticket_number TEXT UNIQUE NOT NULL,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket TEXT UNIQUE NOT NULL,
     full_name TEXT NOT NULL,
+    username TEXT NOT NULL,
     email TEXT NOT NULL,
     phone TEXT NOT NULL,
     mpesa_number TEXT NOT NULL,
     referral_code TEXT,
     county TEXT NOT NULL,
-    username TEXT NOT NULL,
-    age_confirmed INTEGER NOT NULL,
-    guidelines_confirmed INTEGER NOT NULL,
-    info_sharing_confirmed INTEGER NOT NULL,
-    status TEXT DEFAULT 'pending',
-    ip_address TEXT,
+    age INTEGER,
+    gender TEXT,
+    availability TEXT,
+    languages TEXT,
+    bio TEXT,
+    ip TEXT,
     user_agent TEXT,
-    submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    profile_pics TEXT,
+    cool_pics TEXT,
+    nude_pics TEXT,
+    nude_videos TEXT,
+    confirm_share INTEGER,
+    confirm_age INTEGER,
+    confirm_guidelines INTEGER,
+    status TEXT DEFAULT 'pending',
+    created_at TEXT DEFAULT (datetime('now'))
   );
-
-  CREATE TABLE IF NOT EXISTS media_files (
-    id TEXT PRIMARY KEY,
-    application_id TEXT NOT NULL,
-    file_type TEXT NOT NULL,
-    category TEXT NOT NULL,
-    original_name TEXT,
-    stored_name TEXT NOT NULL,
-    mime_type TEXT,
-    file_size INTEGER,
-    duration REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_app_ticket ON applications(ticket_number);
-  CREATE INDEX IF NOT EXISTS idx_media_app ON media_files(application_id);
 `);
 
-// ============ MULTER (FILE UPLOAD) ============
+// ---------- Middleware ----------
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true }));
+app.set('trust proxy', 1);
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 1000 * 60 * 60 * 4 // 4 hours
+  }
+}));
+app.use(express.static(PUBLIC_DIR));
+
+// ---------- Multer (uploads) ----------
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const appDir = path.join(UPLOAD_DIR, req.applicationId || 'temp');
-    if (!fs.existsSync(appDir)) fs.mkdirSync(appDir, { recursive: true });
-    cb(null, appDir);
+    const ticket = req.ticket || 'tmp';
+    const dir = path.join(UPLOAD_DIR, ticket);
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
   },
   filename: (req, file, cb) => {
-    const unique = uuidv4();
-    const ext = path.extname(file.originalname);
-    cb(null, `${file.fieldname}-${unique}${ext}`);
+    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${file.fieldname}-${Date.now()}-${safe}`);
   }
 });
+
+const IMAGE_EXTS = /\.(jpe?g|png|gif|webp|bmp|heic|heif)$/i;
+const VIDEO_EXTS = /\.(mp4|mov|m4v|webm|avi|mkv|3gp|3g2|ts|flv|wmv)$/i;
+const fileFilter = (req, file, cb) => {
+  const isImageField = ['profile_pics', 'cool_pics', 'nude_pics'].includes(file.fieldname);
+  const isVideoField = file.fieldname === 'nude_videos';
+  const mt = (file.mimetype || '').toLowerCase();
+  const nm = file.originalname || '';
+  if (isImageField) {
+    const ok = mt.startsWith('image/') || IMAGE_EXTS.test(nm);
+    if (!ok) return cb(new Error('Only images allowed for ' + file.fieldname));
+  }
+  if (isVideoField) {
+    const ok = mt.startsWith('video/') || VIDEO_EXTS.test(nm) || mt === 'application/octet-stream';
+    if (!ok) return cb(new Error('Only videos allowed for nude_videos'));
+  }
+  cb(null, true);
+};
 
 const upload = multer({
   storage,
-  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB per file
-  fileFilter: (req, file, cb) => {
-    const allowedImage = /jpeg|jpg|png|webp|gif|image/i;
-    const allowedVideoMime = /mp4|mov|avi|mkv|webm|quicktime|video|octet-stream/i;
-    const allowedVideoExt = /\.(mp4|mov|avi|mkv|webm|m4v|3gp|flv|wmv)$/i;
-    const isImage = file.fieldname.includes('picture') || file.fieldname.includes('profile');
-    const isVideo = file.fieldname.includes('video');
-
-    if (isImage && (allowedImage.test(file.mimetype) || /\.(jpg|jpeg|png|webp|gif)$/i.test(file.originalname))) {
-      return cb(null, true);
-    }
-    if (isVideo && (allowedVideoMime.test(file.mimetype) || allowedVideoExt.test(file.originalname))) {
-      return cb(null, true);
-    }
-    cb(new Error(`Invalid file type for ${file.fieldname}: ${file.mimetype} (${file.originalname})`));
+  fileFilter,
+  limits: {
+    fileSize: 500 * 1024 * 1024, // 500MB per file (videos)
+    files: 20
   }
-});
-
-// Attach applicationId before multer processes files
-const prepareUpload = (req, res, next) => {
-  req.applicationId = uuidv4();
-  next();
-};
-
-const uploadFields = upload.fields([
-  { name: 'profile_pictures', maxCount: 2 },
-  { name: 'cool_pictures', maxCount: 3 },
-  { name: 'nude_pictures', maxCount: 3 },
+}).fields([
+  { name: 'profile_pics', maxCount: 2 },
+  { name: 'cool_pics', maxCount: 3 },
+  { name: 'nude_pics', maxCount: 3 },
   { name: 'nude_videos', maxCount: 3 }
 ]);
 
-// ============ AUTH MIDDLEWARE ============
-const authenticateAdmin = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token provided' });
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    if (!decoded.isAdmin) return res.status(403).json({ error: 'Not authorized' });
-    req.admin = decoded;
-    next();
-  } catch (e) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-};
-
-// ============ HELPER FUNCTIONS ============
-function generateTicket() {
-  const prefix = 'UTM';
-  const timestamp = Date.now().toString().slice(-6);
-  const random = Math.floor(Math.random() * 9000) + 1000;
-  return `${prefix}-${timestamp}-${random}`;
+// Assign ticket BEFORE multer so uploads land in the right folder
+function assignTicket(req, res, next) {
+  const now = new Date();
+  const stamp = now.getFullYear().toString().slice(-2)
+    + String(now.getMonth() + 1).padStart(2, '0')
+    + String(now.getDate()).padStart(2, '0');
+  const rand = crypto.randomBytes(3).toString('hex').toUpperCase();
+  req.ticket = `UTM-${stamp}-${rand}`;
+  next();
 }
 
-// ============ ROUTES ============
-
-// Health check
+// ---------- Public routes ----------
 app.get('/', (req, res) => {
   res.json({
     service: 'Utamu Agency API',
-    status: 'running',
-    version: '1.0.0',
-    endpoints: ['/api/submit', '/api/admin/login', '/api/admin/applications']
+    status: 'ok',
+    admin: '/admin',
+    time: new Date().toISOString()
   });
 });
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// ============ APPLICATION SUBMISSION ============
-app.post('/api/submit', submitLimiter, prepareUpload, (req, res) => {
-  uploadFields(req, res, (err) => {
+app.post('/api/apply', assignTicket, (req, res) => {
+  upload(req, res, (err) => {
     if (err) {
-      console.error('Upload error:', err);
-      return res.status(400).json({ error: err.message });
+      console.error('Upload error:', err.message);
+      return res.status(400).json({ ok: false, error: err.message });
     }
-
     try {
-      const {
-        full_name, email, phone, mpesa_number, referral_code,
-        county, username, age_confirmed, guidelines_confirmed, info_sharing_confirmed
-      } = req.body;
-
-      // Validation
-      if (!full_name || !email || !phone || !mpesa_number || !county || !username) {
-        return res.status(400).json({ error: 'Missing required fields' });
+      const b = req.body;
+      const required = ['full_name', 'username', 'email', 'phone', 'mpesa_number', 'county'];
+      for (const key of required) {
+        if (!b[key] || !String(b[key]).trim()) {
+          return res.status(400).json({ ok: false, error: `Field "${key}" is required` });
+        }
       }
-
-      if (!/^\S+@\S+\.\S+$/.test(email)) {
-        return res.status(400).json({ error: 'Invalid email format' });
-      }
-
-      if (age_confirmed !== 'true' || guidelines_confirmed !== 'true' || info_sharing_confirmed !== 'true') {
-        return res.status(400).json({ error: 'All confirmations must be checked' });
+      if (!b.confirm_share || !b.confirm_age || !b.confirm_guidelines) {
+        return res.status(400).json({ ok: false, error: 'All confirmation checkboxes are required' });
       }
 
       const files = req.files || {};
-      const profilePics = files.profile_pictures || [];
-      const coolPics = files.cool_pictures || [];
-      const nudePics = files.nude_pictures || [];
-      const nudeVids = files.nude_videos || [];
+      const pack = (arr) => (arr || []).map(f => ({
+        name: f.originalname,
+        stored: f.filename,
+        mime: f.mimetype,
+        size: f.size
+      }));
 
-      if (profilePics.length < 2) return res.status(400).json({ error: 'Please upload exactly 2 profile pictures' });
-      if (coolPics.length < 3) return res.status(400).json({ error: 'Please upload exactly 3 cool pictures' });
-      if (nudePics.length < 3) return res.status(400).json({ error: 'Please upload exactly 3 nude pictures' });
-      if (nudeVids.length < 3) return res.status(400).json({ error: 'Please upload exactly 3 nude videos' });
-
-      const applicationId = req.applicationId;
-      const ticket = generateTicket();
-      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-      const userAgent = req.headers['user-agent'] || '';
-
-      // Insert application
-      const insertApp = db.prepare(`
-        INSERT INTO applications (
-          id, ticket_number, full_name, email, phone, mpesa_number, referral_code,
-          county, username, age_confirmed, guidelines_confirmed, info_sharing_confirmed,
-          ip_address, user_agent
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      insertApp.run(
-        applicationId, ticket, full_name, email, phone, mpesa_number,
-        referral_code || null, county, username, 1, 1, 1, ip, userAgent
-      );
-
-      // Insert media files
-      const insertMedia = db.prepare(`
-        INSERT INTO media_files (id, application_id, file_type, category, original_name, stored_name, mime_type, file_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      const stmt = db.prepare(`
+        INSERT INTO applications
+          (ticket, full_name, username, email, phone, mpesa_number, referral_code, county,
+           age, gender, availability, languages, bio, ip, user_agent,
+           profile_pics, cool_pics, nude_pics, nude_videos,
+           confirm_share, confirm_age, confirm_guidelines)
+        VALUES (@ticket,@full_name,@username,@email,@phone,@mpesa_number,@referral_code,@county,
+                @age,@gender,@availability,@languages,@bio,@ip,@user_agent,
+                @profile_pics,@cool_pics,@nude_pics,@nude_videos,
+                @confirm_share,@confirm_age,@confirm_guidelines)
       `);
 
-      const saveFiles = (fileList, fileType, category) => {
-        fileList.forEach(f => {
-          insertMedia.run(uuidv4(), applicationId, fileType, category, f.originalname, f.filename, f.mimetype, f.size);
-        });
-      };
-
-      saveFiles(profilePics, 'image', 'profile');
-      saveFiles(coolPics, 'image', 'cool');
-      saveFiles(nudePics, 'image', 'nude');
-      saveFiles(nudeVids, 'video', 'nude');
+      const info = stmt.run({
+        ticket: req.ticket,
+        full_name: b.full_name.trim(),
+        username: b.username.trim(),
+        email: b.email.trim(),
+        phone: b.phone.trim(),
+        mpesa_number: b.mpesa_number.trim(),
+        referral_code: (b.referral_code || '').trim(),
+        county: b.county.trim(),
+        age: b.age ? parseInt(b.age, 10) : null,
+        gender: b.gender || null,
+        availability: b.availability || null,
+        languages: b.languages || null,
+        bio: b.bio || null,
+        ip: req.ip,
+        user_agent: req.get('user-agent') || '',
+        profile_pics: JSON.stringify(pack(files.profile_pics)),
+        cool_pics: JSON.stringify(pack(files.cool_pics)),
+        nude_pics: JSON.stringify(pack(files.nude_pics)),
+        nude_videos: JSON.stringify(pack(files.nude_videos)),
+        confirm_share: 1,
+        confirm_age: 1,
+        confirm_guidelines: 1
+      });
 
       res.json({
-        success: true,
-        ticket_number: ticket,
-        application_id: applicationId,
-        message: 'Application submitted successfully',
-        submitted_at: new Date().toISOString()
+        ok: true,
+        ticket: req.ticket,
+        id: info.lastInsertRowid,
+        message: 'Welcome to Utamu Agency. Our team will respond via our official email within 2 hours.'
       });
-    } catch (error) {
-      console.error('Submit error:', error);
-      res.status(500).json({ error: 'Server error: ' + error.message });
+    } catch (e) {
+      console.error('DB error:', e);
+      res.status(500).json({ ok: false, error: 'Server error: ' + e.message });
     }
   });
 });
 
-// Get receipt (public, by ticket number)
+// Receipt JSON
 app.get('/api/receipt/:ticket', (req, res) => {
-  const row = db.prepare(`
-    SELECT ticket_number, full_name, email, username, county, submitted_at, status
-    FROM applications WHERE ticket_number = ?
-  `).get(req.params.ticket);
-  if (!row) return res.status(404).json({ error: 'Ticket not found' });
-  res.json(row);
+  const row = db.prepare('SELECT ticket, full_name, username, email, county, created_at FROM applications WHERE ticket = ?').get(req.params.ticket);
+  if (!row) return res.status(404).json({ ok: false, error: 'Ticket not found' });
+  res.json({ ok: true, receipt: row });
 });
 
-// ============ ADMIN ROUTES ============
-app.post('/api/admin/login', loginLimiter, async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+// Downloadable receipt (printable HTML)
+app.get('/api/receipt/:ticket/pdf', (req, res) => {
+  const row = db.prepare('SELECT * FROM applications WHERE ticket = ?').get(req.params.ticket);
+  if (!row) return res.status(404).send('Ticket not found');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Utamu Agency Receipt ${row.ticket}</title>
+  <style>
+    *{box-sizing:border-box}body{font-family:'Segoe UI',Arial,sans-serif;background:#0b0510;color:#fff;margin:0;padding:40px}
+    .card{max-width:720px;margin:0 auto;background:linear-gradient(135deg,#1a0a24,#2d0f3a);border:1px solid #6b1f8f;border-radius:20px;padding:40px;box-shadow:0 30px 80px rgba(120,20,180,.4)}
+    h1{margin:0 0 4px;color:#ff4d8d;letter-spacing:1px}
+    .sub{color:#c9a3ff;margin-bottom:28px;font-size:14px}
+    .ticket{background:#000;border:2px dashed #ff4d8d;padding:20px;border-radius:12px;text-align:center;margin:20px 0}
+    .ticket .code{font-family:'Courier New',monospace;font-size:28px;color:#ffd166;letter-spacing:3px}
+    table{width:100%;border-collapse:collapse;margin-top:20px}
+    td{padding:10px 12px;border-bottom:1px solid #3a1550}
+    td:first-child{color:#c9a3ff;width:40%}
+    .stamp{margin-top:30px;text-align:center;font-size:12px;color:#8a6ba8}
+    .btn-print{display:inline-block;margin-top:20px;padding:12px 24px;background:#ff4d8d;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:bold}
+    @media print{.btn-print{display:none}body{background:#fff;color:#000}.card{border:2px solid #000;box-shadow:none}}
+  </style></head>
+  <body><div class="card">
+    <h1>UTAMU AGENCY</h1>
+    <div class="sub">Mombasa Hookup Weekend • Application Receipt</div>
+    <div class="ticket">
+      <div>YOUR TICKET NUMBER</div>
+      <div class="code">${row.ticket}</div>
+    </div>
+    <table>
+      <tr><td>Full Name</td><td>${escapeHtml(row.full_name)}</td></tr>
+      <tr><td>Username</td><td>${escapeHtml(row.username)}</td></tr>
+      <tr><td>Email</td><td>${escapeHtml(row.email)}</td></tr>
+      <tr><td>Phone</td><td>${escapeHtml(row.phone)}</td></tr>
+      <tr><td>County</td><td>${escapeHtml(row.county)}</td></tr>
+      <tr><td>Submitted</td><td>${row.created_at} UTC</td></tr>
+      <tr><td>Status</td><td>Pending Review</td></tr>
+    </table>
+    <p style="margin-top:26px;line-height:1.6;color:#e0c6ff">
+      Welcome to Utamu Agency. Your application has been received. Our team will respond
+      to you via our <b>official email</b> within <b>2 hours</b>. Most of our clients are
+      based in the Middle East and your information is kept strictly private.
+    </p>
+    <div class="stamp">This receipt was issued by Utamu Agency • Confidential</div>
+    <button class="btn-print" onclick="window.print()">Print / Save as PDF</button>
+  </div></body></html>`;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Content-Disposition', `inline; filename="utamu-receipt-${row.ticket}.html"`);
+  res.send(html);
+});
 
-  if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD_PLAIN) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------- Admin ----------
+function requireAdmin(req, res, next) {
+  if (req.session && req.session.admin) return next();
+  if (req.path.startsWith('/admin/api')) return res.status(401).json({ ok: false, error: 'unauthorized' });
+  res.redirect('/admin/login.html');
+}
+
+app.post('/admin/login', (req, res) => {
+  const { password } = req.body || {};
+  if (password === ADMIN_PASSWORD) {
+    req.session.admin = true;
+    return res.json({ ok: true });
   }
-
-  const token = jwt.sign({ username, isAdmin: true }, JWT_SECRET, { expiresIn: '24h' });
-  res.json({ success: true, token, expires_in: '24h' });
+  res.status(401).json({ ok: false, error: 'Invalid password' });
 });
 
-app.get('/api/admin/applications', authenticateAdmin, (req, res) => {
-  const apps = db.prepare(`
-    SELECT * FROM applications ORDER BY submitted_at DESC
-  `).all();
-
-  const enriched = apps.map(a => {
-    const media = db.prepare('SELECT * FROM media_files WHERE application_id = ?').all(a.id);
-    return { ...a, media };
-  });
-  res.json({ count: enriched.length, applications: enriched });
+app.post('/admin/logout', (req, res) => {
+  req.session.destroy(() => res.json({ ok: true }));
 });
 
-app.get('/api/admin/application/:id', authenticateAdmin, (req, res) => {
-  const app = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
-  if (!app) return res.status(404).json({ error: 'Not found' });
-  const media = db.prepare('SELECT * FROM media_files WHERE application_id = ?').all(app.id);
-  res.json({ ...app, media });
+app.get('/admin/api/session', (req, res) => {
+  res.json({ ok: true, authenticated: !!(req.session && req.session.admin) });
 });
 
-// Serve a media file (admin only)
-app.get('/api/admin/media/:mediaId', authenticateAdmin, (req, res) => {
-  const media = db.prepare('SELECT * FROM media_files WHERE id = ?').get(req.params.mediaId);
-  if (!media) return res.status(404).json({ error: 'Media not found' });
-  const filePath = path.join(UPLOAD_DIR, media.application_id, media.stored_name);
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing' });
-
-  const download = req.query.download === '1';
-  if (download) {
-    return res.download(filePath, media.original_name || media.stored_name);
-  }
-  res.setHeader('Content-Type', media.mime_type);
-  fs.createReadStream(filePath).pipe(res);
+app.get('/admin/api/applications', requireAdmin, (req, res) => {
+  const rows = db.prepare('SELECT * FROM applications ORDER BY id DESC').all();
+  const parsed = rows.map(r => ({
+    ...r,
+    profile_pics: safeJson(r.profile_pics),
+    cool_pics: safeJson(r.cool_pics),
+    nude_pics: safeJson(r.nude_pics),
+    nude_videos: safeJson(r.nude_videos)
+  }));
+  res.json({ ok: true, applications: parsed, total: parsed.length });
 });
 
-// Get a signed short-lived URL for direct browser access to a media file
-app.get('/api/admin/media-url/:mediaId', authenticateAdmin, (req, res) => {
-  const media = db.prepare('SELECT * FROM media_files WHERE id = ?').get(req.params.mediaId);
-  if (!media) return res.status(404).json({ error: 'Media not found' });
-  const token = jwt.sign({ isAdmin: true, mediaId: media.id }, JWT_SECRET, { expiresIn: '1h' });
-  const url = `/uploads/${media.application_id}/${media.stored_name}?token=${token}`;
-  res.json({ url, mime_type: media.mime_type });
-});
-
-// Export all applications as CSV
-app.get('/api/admin/export/csv', authenticateAdmin, (req, res) => {
-  const apps = db.prepare('SELECT * FROM applications ORDER BY submitted_at DESC').all();
-  const header = 'Ticket,Full Name,Email,Phone,Mpesa,Referral,County,Username,Status,Submitted At\n';
-  const rows = apps.map(a =>
-    [a.ticket_number, a.full_name, a.email, a.phone, a.mpesa_number,
-     a.referral_code || '', a.county, a.username, a.status, a.submitted_at]
-    .map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')
-  ).join('\n');
-
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="utamu-applications-${Date.now()}.csv"`);
-  res.send(header + rows);
-});
-
-// Download entire application (info + media) as ZIP
-app.get('/api/admin/download/:id', authenticateAdmin, (req, res) => {
-  const app = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
-  if (!app) return res.status(404).json({ error: 'Not found' });
-  const media = db.prepare('SELECT * FROM media_files WHERE application_id = ?').all(app.id);
-
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="${app.ticket_number}.zip"`);
-
-  const archive = archiver('zip', { zlib: { level: 6 } });
-  archive.on('error', err => res.status(500).send({ error: err.message }));
-  archive.pipe(res);
-
-  const info = JSON.stringify({ ...app, media }, null, 2);
-  archive.append(info, { name: 'application_info.json' });
-
-  media.forEach(m => {
-    const filePath = path.join(UPLOAD_DIR, app.id, m.stored_name);
-    if (fs.existsSync(filePath)) {
-      archive.file(filePath, { name: `${m.category}/${m.original_name || m.stored_name}` });
+app.get('/admin/api/applications/:id', requireAdmin, (req, res) => {
+  const r = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
+  if (!r) return res.status(404).json({ ok: false });
+  res.json({
+    ok: true,
+    application: {
+      ...r,
+      profile_pics: safeJson(r.profile_pics),
+      cool_pics: safeJson(r.cool_pics),
+      nude_pics: safeJson(r.nude_pics),
+      nude_videos: safeJson(r.nude_videos)
     }
   });
+});
 
+app.delete('/admin/api/applications/:id', requireAdmin, (req, res) => {
+  const r = db.prepare('SELECT ticket FROM applications WHERE id = ?').get(req.params.id);
+  if (!r) return res.status(404).json({ ok: false });
+  db.prepare('DELETE FROM applications WHERE id = ?').run(req.params.id);
+  // remove files
+  const dir = path.join(UPLOAD_DIR, r.ticket);
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  res.json({ ok: true });
+});
+
+// Serve individual asset (image or video). Supports Range for videos so <video> can seek.
+app.get('/admin/api/file/:id/:field/:index', requireAdmin, (req, res) => {
+  const { id, field, index } = req.params;
+  const allowed = ['profile_pics', 'cool_pics', 'nude_pics', 'nude_videos'];
+  if (!allowed.includes(field)) return res.status(400).send('bad field');
+  const row = db.prepare(`SELECT ticket, ${field} AS list FROM applications WHERE id = ?`).get(id);
+  if (!row) return res.status(404).send('not found');
+  const arr = safeJson(row.list);
+  const item = arr[Number(index)];
+  if (!item) return res.status(404).send('file not found');
+  const abs = path.join(UPLOAD_DIR, row.ticket, item.stored);
+  if (!fs.existsSync(abs)) return res.status(404).send('missing');
+
+  if (req.query.download === '1') {
+    return res.download(abs, item.name);
+  }
+
+  // Range support for video
+  const stat = fs.statSync(abs);
+  const range = req.headers.range;
+  if (range && item.mime && item.mime.startsWith('video/')) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+    const chunk = (end - start) + 1;
+    res.writeHead(206, {
+      'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': chunk,
+      'Content-Type': item.mime
+    });
+    fs.createReadStream(abs, { start, end }).pipe(res);
+  } else {
+    res.setHeader('Content-Type', item.mime || 'application/octet-stream');
+    res.setHeader('Content-Length', stat.size);
+    fs.createReadStream(abs).pipe(res);
+  }
+});
+
+// Download all files for a single application as a zip
+app.get('/admin/api/download/:id/all', requireAdmin, (req, res) => {
+  const r = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
+  if (!r) return res.status(404).send('not found');
+  const dir = path.join(UPLOAD_DIR, r.ticket);
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${r.ticket}-${r.username || 'applicant'}.zip"`);
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.on('error', err => { console.error(err); res.end(); });
+  archive.pipe(res);
+  // Add JSON summary
+  archive.append(JSON.stringify(r, null, 2), { name: `${r.ticket}-info.json` });
+  if (fs.existsSync(dir)) {
+    archive.directory(dir, 'media');
+  }
   archive.finalize();
 });
 
-// Delete application
-app.delete('/api/admin/application/:id', authenticateAdmin, (req, res) => {
-  const app = db.prepare('SELECT * FROM applications WHERE id = ?').get(req.params.id);
-  if (!app) return res.status(404).json({ error: 'Not found' });
-
-  db.prepare('DELETE FROM media_files WHERE application_id = ?').run(app.id);
-  db.prepare('DELETE FROM applications WHERE id = ?').run(app.id);
-
-  const appDir = path.join(UPLOAD_DIR, app.id);
-  if (fs.existsSync(appDir)) fs.rmSync(appDir, { recursive: true, force: true });
-
-  res.json({ success: true });
+// Export all applications as CSV
+app.get('/admin/api/export.csv', requireAdmin, (req, res) => {
+  const rows = db.prepare('SELECT * FROM applications ORDER BY id DESC').all();
+  const headers = ['id','ticket','full_name','username','email','phone','mpesa_number','referral_code','county','age','gender','availability','languages','status','created_at'];
+  const esc = v => `"${String(v == null ? '' : v).replace(/"/g,'""')}"`;
+  const csv = [headers.join(',')].concat(rows.map(r => headers.map(h => esc(r[h])).join(','))).join('\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="utamu-applications.csv"');
+  res.send(csv);
 });
 
-// Update status
-app.patch('/api/admin/application/:id', authenticateAdmin, (req, res) => {
-  const { status } = req.body;
-  const allowed = ['pending', 'approved', 'rejected', 'contacted'];
-  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  db.prepare('UPDATE applications SET status = ? WHERE id = ?').run(status, req.params.id);
-  res.json({ success: true });
-});
+function safeJson(s) {
+  try { return JSON.parse(s || '[]'); } catch { return []; }
+}
 
-// Stats
-app.get('/api/admin/stats', authenticateAdmin, (req, res) => {
-  const total = db.prepare('SELECT COUNT(*) as c FROM applications').get().c;
-  const pending = db.prepare("SELECT COUNT(*) as c FROM applications WHERE status='pending'").get().c;
-  const approved = db.prepare("SELECT COUNT(*) as c FROM applications WHERE status='approved'").get().c;
-  const rejected = db.prepare("SELECT COUNT(*) as c FROM applications WHERE status='rejected'").get().c;
-  const byCounty = db.prepare('SELECT county, COUNT(*) as count FROM applications GROUP BY county ORDER BY count DESC').all();
-  res.json({ total, pending, approved, rejected, by_county: byCounty });
+// Admin UI routes
+app.get('/admin', requireAdmin, (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'admin.html'));
+});
+app.get('/admin/login.html', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'login.html'));
 });
 
 // Error handler
 app.use((err, req, res, next) => {
-  console.error('Global error:', err);
-  res.status(500).json({ error: err.message || 'Internal server error' });
+  console.error(err);
+  res.status(500).json({ ok: false, error: err.message });
 });
 
-// Start
 app.listen(PORT, () => {
-  console.log(`🎉 Utamu Agency Backend running on port ${PORT}`);
-  console.log(`📁 Uploads directory: ${UPLOAD_DIR}`);
-  console.log(`💾 Database: ${DB_PATH}`);
+  console.log(`\n🌹 Utamu Agency backend running on port ${PORT}`);
+  console.log(`   Admin panel: http://localhost:${PORT}/admin`);
+  console.log(`   Admin password: ${ADMIN_PASSWORD}\n`);
 });

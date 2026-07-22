@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Utamu Agency • Admin Panel</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',Roboto,Arial,sans-serif;background:#08040e;color:#eee;min-height:100vh}
+  header{background:linear-gradient(90deg,#1a0a24,#2d0f3a);padding:16px 28px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #4a1e6b;position:sticky;top:0;z-index:10}
+  header h1{background:linear-gradient(45deg,#ff4d8d,#ffd166);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;font-size:24px;letter-spacing:2px}
+  header .sub{color:#c9a3ff;font-size:11px;letter-spacing:2px;margin-top:2px}
+  .top-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .btn{padding:9px 16px;border-radius:10px;border:none;cursor:pointer;font-weight:600;font-size:13px;letter-spacing:.5px;transition:transform .15s,box-shadow .15s}
+  .btn:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(255,77,141,.25)}
+  .btn-primary{background:linear-gradient(45deg,#ff4d8d,#c9268f);color:#fff}
+  .btn-ghost{background:#2a0f3a;color:#c9a3ff;border:1px solid #4a1e6b}
+  .btn-warn{background:#7a1a1a;color:#ffcccc}
+  .btn-sm{padding:6px 10px;font-size:11px}
+  .container{max-width:1400px;margin:24px auto;padding:0 20px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:22px}
+  .stat{background:linear-gradient(135deg,#1a0a24,#2d0f3a);border:1px solid #4a1e6b;border-radius:14px;padding:18px}
+  .stat .label{color:#c9a3ff;font-size:11px;letter-spacing:2px;margin-bottom:6px}
+  .stat .val{font-size:28px;font-weight:700;color:#ffd166}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+  .toolbar input,.toolbar select{padding:10px 14px;border-radius:10px;border:1px solid #4a1e6b;background:#0f0518;color:#fff;font-size:14px;outline:none}
+  .toolbar input:focus{border-color:#ff4d8d}
+  table{width:100%;border-collapse:collapse;background:#120720;border-radius:14px;overflow:hidden}
+  thead{background:#2d0f3a}
+  th,td{padding:12px 14px;text-align:left;font-size:13px;border-bottom:1px solid #2a1140}
+  th{color:#c9a3ff;letter-spacing:1px;font-weight:600;font-size:11px;text-transform:uppercase}
+  tr:hover{background:#1a0a28}
+  .badge{display:inline-block;padding:3px 8px;border-radius:6px;font-size:10px;letter-spacing:1px;text-transform:uppercase}
+  .badge-pending{background:#3a2a10;color:#ffd166}
+  .empty{text-align:center;padding:60px;color:#7a5a99}
+  /* Modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:flex-start;justify-content:center;overflow:auto;z-index:100;padding:30px 20px}
+  .modal.open{display:flex}
+  .modal-card{background:#120720;border:1px solid #4a1e6b;border-radius:18px;max-width:1100px;width:100%;padding:28px;position:relative}
+  .modal-close{position:absolute;top:14px;right:14px;background:#2a0f3a;border:none;color:#fff;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:18px}
+  .kv{display:grid;grid-template-columns:180px 1fr;gap:10px 20px;margin:20px 0}
+  .kv .k{color:#c9a3ff;font-size:12px;letter-spacing:1px}
+  .kv .v{color:#fff;font-size:14px}
+  .section-title{margin-top:24px;color:#ff4d8d;font-size:14px;letter-spacing:2px;text-transform:uppercase;border-bottom:1px solid #4a1e6b;padding-bottom:8px}
+  .media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:14px}
+  .media-item{background:#0a0410;border:1px solid #2a1140;border-radius:10px;overflow:hidden;position:relative}
+  .media-item img,.media-item video{width:100%;height:180px;object-fit:cover;display:block;cursor:pointer;background:#000}
+  .media-actions{padding:8px;display:flex;gap:6px;justify-content:space-between;align-items:center;font-size:11px;color:#c9a3ff}
+  .media-actions a{color:#ffd166;text-decoration:none;font-weight:600;font-size:11px}
+  /* Video modal */
+  .viewer{position:fixed;inset:0;background:rgba(0,0,0,.95);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+  .viewer.open{display:flex}
+  .viewer video,.viewer img{max-width:95vw;max-height:90vh;border-radius:10px}
+  .viewer .close{position:absolute;top:20px;right:20px;background:#ff4d8d;border:none;color:#fff;width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer}
+  @media (max-width:768px){
+    .kv{grid-template-columns:1fr}
+    th:nth-child(4),th:nth-child(5),th:nth-child(7),
+    td:nth-child(4),td:nth-child(5),td:nth-child(7){display:none}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>UTAMU AGENCY</h1>
+    <div class="sub">ADMINISTRATOR CONTROL PANEL</div>
+  </div>
+  <div class="top-actions">
+    <button class="btn btn-ghost" onclick="load()">🔄 Refresh</button>
+    <a class="btn btn-primary" href="/admin/api/export.csv">⬇ Export CSV</a>
+    <button class="btn btn-warn" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<div class="container">
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <input type="text" id="search" placeholder="🔍 Search name, email, phone, ticket, county…" style="flex:1;min-width:260px">
+    <select id="filter-county">
+      <option value="">All counties</option>
+    </select>
+  </div>
+
+  <div style="overflow-x:auto">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th>Ticket</th>
+          <th>Name / Username</th>
+          <th>Email</th>
+          <th>Phone / M-Pesa</th>
+          <th>County</th>
+          <th>Media</th>
+          <th>Submitted</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"><tr><td colspan="8" class="empty">Loading applications…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Detail modal -->
+<div class="modal" id="modal">
+  <div class="modal-card">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<!-- Media viewer -->
+<div class="viewer" id="viewer" onclick="if(event.target.id==='viewer')closeViewer()">
+  <button class="close" onclick="closeViewer()">✕</button>
+  <div id="viewer-body"></div>
+</div>
+
+<script>
+let APPS = [];
+
+async function load() {
+  try {
+    const r = await fetch('/admin/api/applications', { credentials: 'include' });
+    if (r.status === 401) { window.location = '/admin/login.html'; return; }
+    const j = await r.json();
+    APPS = j.applications || [];
+    renderStats();
+    renderTable();
+    populateCounties();
+  } catch (e) {
+    document.getElementById('tbody').innerHTML = '<tr><td colspan="8" class="empty">Failed to load</td></tr>';
+  }
+}
+
+function renderStats() {
+  const total = APPS.length;
+  const today = new Date().toISOString().slice(0,10);
+  const todayCount = APPS.filter(a => (a.created_at||'').startsWith(today)).length;
+  const counties = new Set(APPS.map(a => a.county)).size;
+  const withVideo = APPS.filter(a => (a.nude_videos||[]).length > 0).length;
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><div class="label">TOTAL APPLICATIONS</div><div class="val">${total}</div></div>
+    <div class="stat"><div class="label">TODAY</div><div class="val">${todayCount}</div></div>
+    <div class="stat"><div class="label">COUNTIES REACHED</div><div class="val">${counties}</div></div>
+    <div class="stat"><div class="label">WITH VIDEO</div><div class="val">${withVideo}</div></div>
+  `;
+}
+
+function populateCounties() {
+  const sel = document.getElementById('filter-county');
+  const set = [...new Set(APPS.map(a => a.county))].sort();
+  sel.innerHTML = '<option value="">All counties</option>' + set.map(c => `<option value="${c}">${c}</option>`).join('');
+}
+
+function renderTable() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const cf = document.getElementById('filter-county').value;
+  const filtered = APPS.filter(a => {
+    if (cf && a.county !== cf) return false;
+    if (!q) return true;
+    return (a.full_name+' '+a.username+' '+a.email+' '+a.phone+' '+a.mpesa_number+' '+a.ticket+' '+a.county).toLowerCase().includes(q);
+  });
+  if (!filtered.length) {
+    document.getElementById('tbody').innerHTML = '<tr><td colspan="8" class="empty">No applications found</td></tr>';
+    return;
+  }
+  document.getElementById('tbody').innerHTML = filtered.map(a => `
+    <tr>
+      <td><b style="color:#ffd166">${a.ticket}</b></td>
+      <td><b>${escapeHtml(a.full_name)}</b><br><span style="color:#c9a3ff;font-size:11px">@${escapeHtml(a.username)}</span></td>
+      <td>${escapeHtml(a.email)}</td>
+      <td>${escapeHtml(a.phone)}<br><span style="color:#c9a3ff;font-size:11px">${escapeHtml(a.mpesa_number)}</span></td>
+      <td>${escapeHtml(a.county)}</td>
+      <td>📸 ${(a.profile_pics||[]).length + (a.cool_pics||[]).length + (a.nude_pics||[]).length} · 🎬 ${(a.nude_videos||[]).length}</td>
+      <td style="font-size:11px;color:#c9a3ff">${a.created_at}</td>
+      <td>
+        <button class="btn btn-primary btn-sm" onclick="viewApp(${a.id})">View</button>
+        <a class="btn btn-ghost btn-sm" href="/admin/api/download/${a.id}/all">ZIP</a>
+        <button class="btn btn-warn btn-sm" onclick="delApp(${a.id})">✕</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function viewApp(id) {
+  const r = await fetch('/admin/api/applications/'+id, { credentials:'include' });
+  const j = await r.json();
+  if (!j.ok) return alert('Failed to load');
+  const a = j.application;
+  const body = document.getElementById('modal-body');
+  body.innerHTML = `
+    <h2 style="color:#ff4d8d">Application #${a.id} <span style="color:#ffd166;font-family:monospace">${a.ticket}</span></h2>
+    <div class="kv">
+      <div class="k">Full Name</div><div class="v">${escapeHtml(a.full_name)}</div>
+      <div class="k">Username</div><div class="v">@${escapeHtml(a.username)}</div>
+      <div class="k">Email</div><div class="v">${escapeHtml(a.email)}</div>
+      <div class="k">Phone</div><div class="v">${escapeHtml(a.phone)}</div>
+      <div class="k">M-Pesa Number</div><div class="v">${escapeHtml(a.mpesa_number)}</div>
+      <div class="k">Referral Code</div><div class="v">${escapeHtml(a.referral_code||'—')}</div>
+      <div class="k">County</div><div class="v">${escapeHtml(a.county)}</div>
+      <div class="k">Age</div><div class="v">${a.age||'—'}</div>
+      <div class="k">Gender</div><div class="v">${escapeHtml(a.gender||'—')}</div>
+      <div class="k">Availability</div><div class="v">${escapeHtml(a.availability||'—')}</div>
+      <div class="k">Languages</div><div class="v">${escapeHtml(a.languages||'—')}</div>
+      <div class="k">Bio</div><div class="v">${escapeHtml(a.bio||'—')}</div>
+      <div class="k">Submitted</div><div class="v">${a.created_at} UTC</div>
+      <div class="k">IP</div><div class="v" style="font-family:monospace;font-size:12px">${escapeHtml(a.ip||'—')}</div>
+    </div>
+    <div style="margin:20px 0;display:flex;gap:10px;flex-wrap:wrap">
+      <a class="btn btn-primary" href="/admin/api/download/${a.id}/all">⬇ Download ZIP (all media + info)</a>
+      <button class="btn btn-warn" onclick="delApp(${a.id});closeModal()">🗑 Delete Application</button>
+    </div>
+    ${mediaSection('Profile Pictures', a.profile_pics, a.id, 'profile_pics', false)}
+    ${mediaSection('Cool Pictures', a.cool_pics, a.id, 'cool_pics', false)}
+    ${mediaSection('Private Pictures', a.nude_pics, a.id, 'nude_pics', false)}
+    ${mediaSection('Private Videos', a.nude_videos, a.id, 'nude_videos', true)}
+  `;
+  document.getElementById('modal').classList.add('open');
+}
+
+function mediaSection(title, arr, id, field, isVideo) {
+  if (!arr || !arr.length) return `<div class="section-title">${title}</div><p style="color:#7a5a99;margin-top:10px">None uploaded</p>`;
+  return `
+    <div class="section-title">${title} (${arr.length})</div>
+    <div class="media-grid">
+      ${arr.map((f, i) => {
+        const url = `/admin/api/file/${id}/${field}/${i}`;
+        const dl = url + '?download=1';
+        if (isVideo) {
+          return `<div class="media-item">
+            <video src="${url}" preload="metadata" controls onclick="openVideo('${url}')"></video>
+            <div class="media-actions"><span title="${escapeHtml(f.name)}">${sizeFmt(f.size)}</span><a href="${dl}">⬇ Download</a></div>
+          </div>`;
+        }
+        return `<div class="media-item">
+          <img src="${url}" onclick="openImage('${url}')" loading="lazy">
+          <div class="media-actions"><span>${sizeFmt(f.size)}</span><a href="${dl}">⬇ Download</a></div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function openImage(url) {
+  document.getElementById('viewer-body').innerHTML = `<img src="${url}">`;
+  document.getElementById('viewer').classList.add('open');
+}
+function openVideo(url) {
+  document.getElementById('viewer-body').innerHTML = `<video src="${url}" controls autoplay style="max-width:95vw;max-height:90vh"></video>`;
+  document.getElementById('viewer').classList.add('open');
+}
+function closeViewer() {
+  document.getElementById('viewer').classList.remove('open');
+  document.getElementById('viewer-body').innerHTML = '';
+}
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+async function delApp(id) {
+  if (!confirm('Delete this application and all its files? This cannot be undone.')) return;
+  const r = await fetch('/admin/api/applications/'+id, { method:'DELETE', credentials:'include' });
+  const j = await r.json();
+  if (j.ok) load();
+  else alert('Failed');
+}
+
+async function logout() {
+  await fetch('/admin/logout', { method:'POST', credentials:'include' });
+  window.location = '/admin/login.html';
+}
+
+function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function sizeFmt(b){if(!b)return'';const u=['B','KB','MB','GB'];let i=0;while(b>=1024&&i<u.length-1){b/=1024;i++}return b.toFixed(1)+' '+u[i];}
+
+document.getElementById('search').addEventListener('input', renderTable);
+document.getElementById('filter-county').addEventListener('change', renderTable);
+load();
+</script>
+</body>
+</html>
