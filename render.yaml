@@ -1,16 +1,14 @@
 services:
   - type: web
     name: utamu-agency-backend
-    runtime: node
-    buildCommand: npm ci && npm run build
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 10000
-      - key: NPM_CONFIG_PRODUCTION
-        value: false
       - key: ADMIN_PASSWORD
         sync: false
       - key: SESSION_SECRET
